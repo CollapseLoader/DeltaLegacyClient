@@ -1,0 +1,171 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+version = '1.0.0'
+group = 'client'
+
+def libsDir = file('libraries')
+
+def prop = { String name, String deft ->
+    def v = project.findProperty(name)
+    (v != null && !v.toString().trim().isEmpty()) ? v.toString() : deft
+}
+
+dependencies {
+    implementation fileTree(dir: libsDir, include: ['*.jar'])
+}
+
+java {
+    toolchain { languageVersion = JavaLanguageVersion.of(21) }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+    options.warnings = false
+    options.deprecation = false
+    options.compilerArgs << '-proc:none'   
+}
+
+application {
+    mainClass = 'client.bootstrap.Start'
+}
+
+def mcAssetIncludes = {
+    include 'assets/minecraft/lang/**'
+    include 'assets/minecraft/textures/**'
+    include 'assets/minecraft/models/**'
+    include 'assets/minecraft/shaders/**'
+    include 'assets/minecraft/particles/**'
+    include 'assets/minecraft/blockstates/**'
+    include 'assets/minecraft/font/**'
+    include 'assets/minecraft/texts/**'
+    include 'assets/minecraft/engine/**'
+    include 'assets/minecraft/gpu_warnlist.json'
+}
+
+tasks.withType(Copy).configureEach {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+jar {
+    archiveBaseName = 'Delta'
+    archiveVersion = '1.0.0'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    manifest {
+        attributes(
+            'Main-Class': 'client.bootstrap.Start',
+            'Multi-Release': 'true',
+            'Implementation-Title': 'Delta-1.16.5',
+            'Implementation-Version': '1.0.0-recovered'
+        )
+    }
+
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from(sourceSets.main.resources)
+
+    def extra = new File(libsDir, 'client-extra.jar')
+    def vanilla = new File(libsDir, 'client.jar')
+    if (extra.exists()) from(zipTree(extra), mcAssetIncludes)
+    if (vanilla.exists()) from(zipTree(vanilla), mcAssetIncludes)
+
+    def filters = new File(libsDir, 'filters-2.0.235-1.jar')
+    if (filters.exists()) {
+        from(zipTree(filters)) { exclude 'META-INF/**' }
+    }
+
+    def markers = new File(temporaryDir, 'mcMarkers')
+    new File(markers, 'assets').mkdirs()
+    new File(markers, 'data').mkdirs()
+    new File(markers, 'assets/.mcassetsroot').text = ''
+    new File(markers, 'data/.mcassetsroot').text = ''
+    from(markers) { include 'assets/.mcassetsroot', 'data/.mcassetsroot' }
+}
+
+def osName = System.getProperty('os.name', '').toLowerCase(Locale.ROOT)
+def nativesFolderName = osName.contains('win') ? 'natives-windows'
+    : (osName.contains('mac') || osName.contains('darwin') ? 'natives-macos' : 'natives-linux')
+
+def loaderRoots = [
+    new File(System.getProperty('user.home'), '.local/share/CollapseLoader'),
+    new File((System.getenv('APPDATA') ?: '~'), 'CollapseLoader'),
+    new File(System.getProperty('user.home'), 'Library/Application Support/CollapseLoader')
+]
+
+def resolveNatives = {
+    def custom = prop('nativesDir', '')
+    if (!custom.isEmpty()) return new File(custom)
+    def local = new File(project.projectDir, nativesFolderName)
+    if (local.isDirectory()) return local
+    for (def root : loaderRoots) {
+        def d = new File(root, nativesFolderName)
+        if (d.isDirectory()) return d
+    }
+    return new File(project.projectDir, 'natives')
+}
+
+def resolveAssets = {
+    def custom = prop('assetsDir', '')
+    if (!custom.isEmpty()) return new File(custom)
+    def local = new File(project.projectDir, 'assets')
+    if (local.isDirectory()) return local
+    for (def root : loaderRoots) {
+        def d = new File(root, 'assets')
+        if (d.isDirectory()) return d
+    }
+    return new File(project.projectDir, 'assets')
+}
+
+def runDir = new File(project.projectDir, prop('gameDir', 'run'))
+
+def runJvmArgs = [
+    "-Xmx${prop('mcMemory', '2048M')}",
+    '-Dfile.encoding=UTF-8',
+    "-Djava.library.path=${resolveNatives().absolutePath}",
+    "-Dlog4j2.configurationFile=file:${project.file('log4j2.xml').absolutePath}",
+    "-Dlog4j.configurationFile=file:${project.file('log4j2.xml').absolutePath}"
+]
+
+def runArgs = [
+    '--username', prop('mcUsername', 'Player'),
+    '--gameDir', runDir.absolutePath,
+    '--assetsDir', resolveAssets().absolutePath,
+    '--assetIndex', prop('assetIndex', '1.16'),
+    '--uuid', 'N/A',
+    '--accessToken', '0',
+    '--userType', 'legacy',
+    '--version', '1.16.5'
+]
+
+task runClient(type: JavaExec, dependsOn: classes) {
+    group = 'delta'
+    description = 'Запускает Delta 1.16.5 с исходников'
+
+    mainClass = 'client.bootstrap.Start'
+    classpath = sourceSets.main.runtimeClasspath
+    workingDir = runDir
+    jvmArgs = runJvmArgs
+    args = runArgs
+
+    doFirst {
+        runDir.mkdirs()
+    }
+}
+
+task debugClient(type: JavaExec, dependsOn: classes) {
+    group = 'delta'
+    description = 'Запускает Delta 1.16.5 и ждёт подключения дебаггера (порт 5005)'
+
+    mainClass = 'client.bootstrap.Start'
+    classpath = sourceSets.main.runtimeClasspath
+    workingDir = runDir
+    jvmArgs = runJvmArgs + ['-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005']
+    args = runArgs
+
+    doFirst {
+        runDir.mkdirs()
+    }
+}
